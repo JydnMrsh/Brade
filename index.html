@@ -76,6 +76,14 @@
   .pickrow{display:flex;align-items:center;gap:12px;padding:12px 2px;border-top:1px solid var(--line);color:var(--text);font-size:17px;margin:0}
   .pickrow:first-child{border-top:0}
   .pickrow input{width:22px;height:22px;accent-color:var(--accent);flex:none}
+  .wtop{display:flex;align-items:center;justify-content:space-between;margin:0 4px 10px}
+  .dots{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+  .dot{width:10px;height:10px;border-radius:50%;background:var(--line);cursor:pointer}
+  .dot.ok{background:var(--ok)}
+  .dot.cur{outline:2px solid var(--accent);outline-offset:2px}
+  .wname{font-size:26px;font-weight:800;letter-spacing:-.5px;margin-bottom:4px}
+  .logged{background:rgba(76,209,135,.12);color:var(--ok);border-radius:10px;padding:8px 12px;font-size:14px;font-weight:600;margin-bottom:12px}
+  button:disabled{opacity:.35}
 </style>
 </head>
 <body>
@@ -137,6 +145,7 @@ function render(){
   if(view.name==='day') return renderDay();
   if(view.name==='library') return renderLibrary();
   if(view.name==='exercise') return renderExercise();
+  if(view.name==='workout') return renderWorkout();
 }
 
 // ---------- drag to reorder (touch + mouse, via a ≡ handle) ----------
@@ -223,7 +232,8 @@ function renderDay(){
   app.innerHTML = `
     ${exs.length ? `<div class="muted small" style="margin:0 4px 10px">${doneCount}/${exs.length} done today · drag ≡ to reorder</div>` : ''}
     <div id="exList">${exs.map(ex => exCard(ex, true)).join('') || `<div class="card empty">No exercises in this day yet.</div>`}</div>
-    <button class="primary" id="addToDay">+ Add / remove exercises</button>
+    ${exs.length ? `<button class="primary" id="startW" style="margin-bottom:10px">▶ Start workout</button>` : ''}
+    <button class="${exs.length?'ghost':'primary'}" id="addToDay" style="width:100%">+ Add / remove exercises</button>
     <div class="row" style="margin-top:12px">
       <button class="ghost" style="flex:1" id="renDay">Rename day</button>
       <button class="ghost" style="flex:1;color:var(--danger)" id="delDay">Delete day</button>
@@ -231,6 +241,11 @@ function renderDay(){
   app.querySelectorAll('#exList .ex').forEach(el => el.onclick = e => { if(!e.target.closest('.handle')) go({name:'exercise', id:el.dataset.id, tab:'log'}); });
   sortable($('#exList'), ids => { d.exIds = ids; save(); });
   $('#addToDay').onclick = () => openAddToDay(d);
+  if(exs.length) $('#startW').onclick = () => {
+    // start at the first exercise not yet logged today
+    const first = d.exIds.findIndex(id => !db.sessions.some(s => s.exId===id && s.date===today()));
+    go({name:'workout', dayId:d.id, idx: first<0 ? 0 : first, started: Date.now(), log:[] });
+  };
   $('#renDay').onclick = () => {
     sheet(`<h2>Rename day</h2><input id="rn" value="${esc(d.name)}" autocomplete="off">
       <button class="primary" style="margin-top:12px" id="rnOk">Save</button>`);
@@ -267,6 +282,95 @@ function openAddToDay(d){
     };
   };
   draw();
+}
+
+// ---------- workout mode: step through a day's exercises ----------
+function renderWorkout(){
+  const d = db.days.find(x => x.id===view.dayId);
+  if(!d || !d.exIds.length) return back();
+  if(view.finished) return renderSummary(d);
+  const n = d.exIds.length;
+  view.idx = Math.max(0, Math.min(view.idx, n-1));
+  const ex = db.exercises.find(e => e.id===d.exIds[view.idx]);
+  if(!ex){ d.exIds.splice(view.idx,1); save(); return render(); }
+  $('#title').textContent = d.name;
+  const ss = sessionsFor(ex.id); const last = ss[ss.length-1];
+  const todays = ss.filter(s => s.date===today());
+  const doneToday = todays[todays.length-1];
+  const best = ss.length ? Math.max(...ss.map(sessionBest1rm)) : 0;
+  const isLast = view.idx === n-1;
+  const nextEx = !isLast ? db.exercises.find(e => e.id===d.exIds[view.idx+1]) : null;
+  const dots = d.exIds.map((id,i) => {
+    const done = db.sessions.some(s => s.exId===id && s.date===today());
+    return `<span class="dot ${i===view.idx?'cur':''} ${done?'ok':''}" data-i="${i}"></span>`;
+  }).join('');
+  app.innerHTML = `
+    <div class="wtop"><span class="muted small">Exercise ${view.idx+1} of ${n}</span><div class="dots">${dots}</div></div>
+    <div class="card">
+      <div class="wname">${esc(ex.name)}</div>
+      <div class="muted small" style="margin-bottom:14px">
+        ${last ? `Last time: <b style="color:var(--text)">${fmt(last.weight)}${db.unit} × ${last.reps.join(' / ')}</b> · ${prettyDate(last.date)}` : 'First time doing this one'}
+        ${best ? `<br>Best est. 1RM: ${fmt(best)}${db.unit}` : ''}
+      </div>
+      ${doneToday ? `<div class="logged">✓ Logged today: ${fmt(doneToday.weight)}${db.unit} × ${doneToday.reps.join(' / ')}</div>` : ''}
+      <label>Weight (${db.unit})</label>
+      <input type="number" inputmode="decimal" id="weight" placeholder="0" value="${(doneToday||last) ? (doneToday||last).weight : ''}" style="margin-bottom:14px">
+      <label>Reps per set</label>
+      <div class="sets">
+        ${[0,1,2].map(i=>`<div><input type="number" inputmode="numeric" class="rep" placeholder="${last? last.reps[i] : '–'}"><div class="muted small" style="text-align:center;margin-top:4px">Set ${i+1}</div></div>`).join('')}
+      </div>
+      <button class="primary" id="saveNext" style="margin-top:16px">${isLast ? 'Save & finish' : 'Save & next →'}</button>
+      ${nextEx ? `<div class="muted small" style="text-align:center;margin-top:8px">Up next: ${esc(nextEx.name)}</div>` : ''}
+    </div>
+    <div class="row">
+      <button class="ghost" style="flex:1" id="prevBtn" ${view.idx===0?'disabled':''}>← Prev</button>
+      <button class="ghost" style="flex:1" id="skipBtn">${isLast ? 'Finish' : (doneToday ? 'Next →' : 'Skip →')}</button>
+    </div>
+    <button class="ghost" style="width:100%;margin-top:10px;color:var(--muted)" id="endBtn">End workout</button>`;
+  const reps = [...document.querySelectorAll('.rep')];
+  reps.forEach((r,i) => r.onkeydown = e => { if(e.key==='Enter'){ e.preventDefault(); (reps[i+1]||$('#saveNext')).focus(); }});
+  const advance = () => { if(isLast){ view.finished = true; } else view.idx++; render(); window.scrollTo(0,0); };
+  document.querySelectorAll('.dot').forEach(dt => dt.onclick = () => { view.idx = +dt.dataset.i; render(); });
+  $('#saveNext').onclick = () => {
+    const r = reps.map(x => parseInt(x.value,10));
+    if(r.every(isNaN) && doneToday) return advance();          // already logged, nothing new typed
+    if(r.some(x => isNaN(x) || x < 0)) return toast('Enter reps for all 3 sets', true);
+    const w = parseFloat($('#weight').value) || 0;
+    const s = {id:uid(), exId:ex.id, date:today(), weight:w, reps:r, t:Date.now()};
+    db.sessions.push(s); save();
+    const nb = sessionBest1rm(s);
+    const pr = ss.length && nb > best;
+    view.log.push({exId:ex.id, pr});
+    toast(pr ? `New best! Est. 1RM ${fmt(nb)}${db.unit}` : 'Saved');
+    advance();
+  };
+  $('#prevBtn').onclick = () => { view.idx--; render(); };
+  $('#skipBtn').onclick = advance;
+  $('#endBtn').onclick = () => { view.finished = true; render(); };
+}
+
+function renderSummary(d){
+  $('#title').textContent = 'Workout done';
+  const mins = Math.max(1, Math.round((Date.now()-view.started)/60000));
+  const rows = d.exIds.map(id => {
+    const ex = db.exercises.find(e => e.id===id); if(!ex) return '';
+    const t = db.sessions.filter(s => s.exId===id && s.date===today());
+    const s = t[t.length-1];
+    const pr = view.log.some(l => l.exId===id && l.pr);
+    return `<div class="hist"><div style="min-width:0"><div class="d">${esc(ex.name)} ${pr?'<span class="pr">PR</span>':''}</div>
+      <div class="small muted">${s ? fmt(s.weight)+db.unit : 'Skipped'}</div></div>
+      <div class="row" style="gap:6px;margin-left:auto">${s ? s.reps.map(r=>`<span class="chip">${r}</span>`).join('') : '<span class="muted">—</span>'}</div></div>`;
+  }).join('');
+  const doneN = d.exIds.filter(id => db.sessions.some(s => s.exId===id && s.date===today())).length;
+  const prs = view.log.filter(l => l.pr).length;
+  app.innerHTML = `
+    <div class="stats">
+      <div class="stat"><div class="l">Exercises</div><div class="v">${doneN}/${d.exIds.length}</div></div>
+      <div class="stat"><div class="l">${prs ? 'New PRs' : 'Time'}</div><div class="v">${prs ? prs : mins+'<span class="small muted"> min</span>'}</div></div>
+    </div>
+    <div class="card"><b>${esc(d.name)} · ${prettyDate(today())}</b><div style="margin-top:6px">${rows}</div></div>
+    <button class="primary" id="doneBtn">Done</button>`;
+  $('#doneBtn').onclick = back;
 }
 
 // ---------- library: every exercise ----------

@@ -1,5 +1,5 @@
 // Caches the app so it opens with no internet connection.
-const CACHE = 'liftlog-v2';
+const CACHE = 'liftlog-v3';
 const FILES = ['./', './index.html', './icon.png'];
 
 self.addEventListener('install', e => {
