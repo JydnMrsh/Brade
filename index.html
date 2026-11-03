@@ -68,6 +68,14 @@
   .sheet h2{margin:0 0 14px;font-size:20px}
   textarea{width:100%;height:140px;background:var(--card2);border:1px solid var(--line);color:var(--text);border-radius:12px;padding:10px;font-size:12px;font-family:ui-monospace,monospace}
   .pr{color:var(--accent);font-size:12px;font-weight:700}
+  .section{font-size:13px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.6px;margin:14px 4px 8px}
+  .handle{margin-left:auto;color:var(--muted);font-size:24px;padding:6px 4px 6px 14px;touch-action:none;cursor:grab;user-select:none;-webkit-user-select:none}
+  .dragging{position:relative;z-index:5;box-shadow:0 10px 30px rgba(0,0,0,.5);background:var(--card2);transition:none}
+  .done{color:var(--ok);font-size:12px;font-weight:700;margin-left:4px}
+  .pick{max-height:45vh;overflow:auto}
+  .pickrow{display:flex;align-items:center;gap:12px;padding:12px 2px;border-top:1px solid var(--line);color:var(--text);font-size:17px;margin:0}
+  .pickrow:first-child{border-top:0}
+  .pickrow input{width:22px;height:22px;accent-color:var(--accent);flex:none}
 </style>
 </head>
 <body>
@@ -113,28 +121,159 @@ function confirmSheet(msg, okText, onOk){
   $('#cNo').onclick = closeSheet; $('#cYes').onclick = () => { closeSheet(); onOk(); };
 }
 
-// ---------- routing ----------
-let view = { name:'home' };
-function go(v){ view = v; render(); window.scrollTo(0,0); }
-$('#backBtn').onclick = () => go({name:'home'});
+// ---------- routing (a simple stack so Back returns to where you came from) ----------
+if(!Array.isArray(db.days)) db.days = [];
+let stack = [{ name:'home' }];
+let view = stack[0];
+function go(v){ stack.push(v); view = v; render(); window.scrollTo(0,0); }
+function back(){ if(stack.length>1) stack.pop(); view = stack[stack.length-1]; render(); window.scrollTo(0,0); }
+function goHome(){ stack = [{name:'home'}]; view = stack[0]; render(); }
+$('#backBtn').onclick = back;
 $('#menuBtn').onclick = openMenu;
 
 function render(){
-  $('#backBtn').style.display = view.name==='home' ? 'none' : '';
+  $('#backBtn').style.display = stack.length>1 ? '' : 'none';
   if(view.name==='home') return renderHome();
+  if(view.name==='day') return renderDay();
+  if(view.name==='library') return renderLibrary();
   if(view.name==='exercise') return renderExercise();
 }
 
-// ---------- home ----------
+// ---------- drag to reorder (touch + mouse, via a ≡ handle) ----------
+function sortable(list, onDone){
+  list.querySelectorAll('.handle').forEach(h => {
+    h.addEventListener('pointerdown', e => {
+      e.preventDefault(); e.stopPropagation();
+      const item = h.closest('[data-id]');
+      const gap = parseFloat(getComputedStyle(item).marginBottom) || 0;
+      let lastY = e.clientY, offset = 0;
+      item.classList.add('dragging');
+      const move = ev => {
+        offset += ev.clientY - lastY; lastY = ev.clientY;
+        const next = item.nextElementSibling, prev = item.previousElementSibling;
+        if(next && next.dataset.id && offset > next.offsetHeight/2){
+          const d = next.offsetHeight + gap; list.insertBefore(next, item); offset -= d;
+        } else if(prev && prev.dataset.id && offset < -prev.offsetHeight/2){
+          const d = prev.offsetHeight + gap; list.insertBefore(item, prev); offset += d;
+        }
+        item.style.transform = `translateY(${offset}px)`;
+      };
+      const up = () => {
+        item.style.transform = ''; item.classList.remove('dragging');
+        window.removeEventListener('pointermove', move); window.removeEventListener('pointerup', up); window.removeEventListener('pointercancel', up);
+        onDone([...list.children].filter(x => x.dataset.id).map(x => x.dataset.id));
+      };
+      window.addEventListener('pointermove', move); window.addEventListener('pointerup', up); window.addEventListener('pointercancel', up);
+    });
+  });
+}
+
+const lastSession = exId => { const ss = sessionsFor(exId); return ss[ss.length-1]; };
+const exMeta = ex => { const l = lastSession(ex.id);
+  return l ? `Last: ${prettyDate(l.date)} · ${fmt(l.weight)}${db.unit} × ${l.reps.join('/')}` : 'No sets logged yet'; };
+const exCard = (ex, withHandle) => {
+  const doneToday = db.sessions.some(s => s.exId===ex.id && s.date===today());
+  return `<div class="card ex" data-id="${ex.id}">
+    <div style="min-width:0;flex:1"><div class="name">${esc(ex.name)} ${doneToday?'<span class="done">✓ Today</span>':''}</div><div class="meta">${exMeta(ex)}</div></div>
+    ${withHandle? '<div class="handle" aria-label="Drag to reorder">≡</div>' : '<div class="chev">›</div>'}</div>`;
+};
+
+// ---------- home: days ----------
 function renderHome(){
   $('#title').textContent = 'LiftLog';
-  const list = db.exercises.map(ex => {
-    const ss = sessionsFor(ex.id); const last = ss[ss.length-1];
-    const meta = last ? `Last: ${prettyDate(last.date)} · ${fmt(last.weight)}${db.unit} × ${last.reps.join('/')}` : 'No sets logged yet';
-    return `<div class="card ex" data-id="${ex.id}"><div><div class="name">${esc(ex.name)}</div><div class="meta">${meta}</div></div><div class="chev">›</div></div>`;
+  const days = db.days.map(d => {
+    const dates = db.sessions.filter(s => d.exIds.includes(s.exId)).map(s => s.date).sort();
+    const last = dates[dates.length-1];
+    return `<div class="card ex day" data-id="${d.id}">
+      <div style="min-width:0;flex:1"><div class="name">${esc(d.name)}</div>
+      <div class="meta">${d.exIds.length} exercise${d.exIds.length===1?'':'s'}${last? ' · last done '+prettyDate(last):''}</div></div>
+      <div class="handle" aria-label="Drag to reorder">≡</div></div>`;
   }).join('');
   app.innerHTML = `
-    ${list || `<div class="card empty">Add your first exercise to get started.<br><span class="small">e.g. Bench Press, Squat, Pull-ups</span></div>`}
+    <div class="section">Workout days</div>
+    <div id="dayList">${days || `<div class="card empty">Create a day like <b>Push</b>, <b>Pull</b> or <b>Legs</b>,<br>then add exercises to it.</div>`}</div>
+    <div class="card">
+      <label for="newDay">New day</label>
+      <div class="row"><input id="newDay" placeholder="e.g. Pull day" autocomplete="off">
+      <button class="ghost" id="addDay" style="white-space:nowrap">Add</button></div>
+    </div>
+    <div class="section">Library</div>
+    <div class="card ex" id="libBtn"><div style="flex:1"><div class="name">All exercises</div>
+      <div class="meta">${db.exercises.length} exercise${db.exercises.length===1?'':'s'}</div></div><div class="chev">›</div></div>`;
+  app.querySelectorAll('.day').forEach(el => el.onclick = e => { if(!e.target.closest('.handle')) go({name:'day', id:el.dataset.id}); });
+  sortable($('#dayList'), ids => { db.days.sort((a,b) => ids.indexOf(a.id)-ids.indexOf(b.id)); save(); });
+  const add = () => {
+    const n = $('#newDay').value.trim(); if(!n) return;
+    const d = {id:uid(), name:n, exIds:[]}; db.days.push(d); save();
+    go({name:'day', id:d.id}); openAddToDay(d);
+  };
+  $('#addDay').onclick = add;
+  $('#newDay').onkeydown = e => { if(e.key==='Enter') add(); };
+  $('#libBtn').onclick = () => go({name:'library'});
+}
+
+// ---------- a single day ----------
+function renderDay(){
+  const d = db.days.find(x => x.id===view.id);
+  if(!d) return goHome();
+  $('#title').textContent = d.name;
+  d.exIds = d.exIds.filter(id => db.exercises.some(e => e.id===id));
+  const exs = d.exIds.map(id => db.exercises.find(e => e.id===id));
+  const doneCount = exs.filter(ex => db.sessions.some(s => s.exId===ex.id && s.date===today())).length;
+  app.innerHTML = `
+    ${exs.length ? `<div class="muted small" style="margin:0 4px 10px">${doneCount}/${exs.length} done today · drag ≡ to reorder</div>` : ''}
+    <div id="exList">${exs.map(ex => exCard(ex, true)).join('') || `<div class="card empty">No exercises in this day yet.</div>`}</div>
+    <button class="primary" id="addToDay">+ Add / remove exercises</button>
+    <div class="row" style="margin-top:12px">
+      <button class="ghost" style="flex:1" id="renDay">Rename day</button>
+      <button class="ghost" style="flex:1;color:var(--danger)" id="delDay">Delete day</button>
+    </div>`;
+  app.querySelectorAll('#exList .ex').forEach(el => el.onclick = e => { if(!e.target.closest('.handle')) go({name:'exercise', id:el.dataset.id, tab:'log'}); });
+  sortable($('#exList'), ids => { d.exIds = ids; save(); });
+  $('#addToDay').onclick = () => openAddToDay(d);
+  $('#renDay').onclick = () => {
+    sheet(`<h2>Rename day</h2><input id="rn" value="${esc(d.name)}" autocomplete="off">
+      <button class="primary" style="margin-top:12px" id="rnOk">Save</button>`);
+    const ok = () => { const n=$('#rn').value.trim(); if(n){ d.name=n; save(); } closeSheet(); render(); };
+    $('#rnOk').onclick = ok; $('#rn').onkeydown = e => { if(e.key==='Enter') ok(); };
+  };
+  $('#delDay').onclick = () => confirmSheet(`Delete "${d.name}"? Your exercises and history are kept.`, 'Delete', () => {
+    db.days = db.days.filter(x => x.id!==d.id); save(); goHome();
+  });
+}
+
+// pick which exercises belong to a day (tick to add, untick to remove, or create new)
+function openAddToDay(d){
+  const picked = new Set(d.exIds);
+  const draw = () => {
+    sheet(`<h2>Exercises in ${esc(d.name)}</h2>
+      <div class="pick">${db.exercises.map(ex => `
+        <label class="pickrow"><input type="checkbox" data-id="${ex.id}" ${picked.has(ex.id)?'checked':''}><span>${esc(ex.name)}</span></label>`).join('')
+        || '<div class="muted small" style="padding:8px 0">No exercises yet. Create one below.</div>'}</div>
+      <div class="row" style="margin-top:10px"><input id="nx" placeholder="New exercise name" autocomplete="off">
+        <button class="ghost" id="nxAdd" style="white-space:nowrap">Create</button></div>
+      <button class="primary" style="margin-top:12px" id="pkDone">Done</button>`);
+    document.querySelectorAll('.pick input').forEach(cb => cb.onchange = () => cb.checked ? picked.add(cb.dataset.id) : picked.delete(cb.dataset.id));
+    const create = () => {
+      const n = $('#nx').value.trim(); if(!n) return;
+      let ex = db.exercises.find(e => e.name.toLowerCase()===n.toLowerCase());
+      if(!ex){ ex = {id:uid(), name:n}; db.exercises.push(ex); save(); }
+      picked.add(ex.id); draw(); setTimeout(()=>$('#nx').focus(), 50);
+    };
+    $('#nxAdd').onclick = create; $('#nx').onkeydown = e => { if(e.key==='Enter') create(); };
+    $('#pkDone').onclick = () => {
+      d.exIds = d.exIds.filter(id => picked.has(id)).concat([...picked].filter(id => !d.exIds.includes(id)));
+      save(); closeSheet(); render();
+    };
+  };
+  draw();
+}
+
+// ---------- library: every exercise ----------
+function renderLibrary(){
+  $('#title').textContent = 'All exercises';
+  app.innerHTML = `
+    ${db.exercises.map(ex => exCard(ex, false)).join('') || `<div class="card empty">No exercises yet.</div>`}
     <div class="card">
       <label for="newEx">New exercise</label>
       <div class="row"><input id="newEx" placeholder="Exercise name" autocomplete="off">
@@ -152,7 +291,7 @@ function renderHome(){
 // ---------- exercise ----------
 function renderExercise(){
   const ex = db.exercises.find(e => e.id===view.id);
-  if(!ex) return go({name:'home'});
+  if(!ex) return back();
   $('#title').textContent = ex.name;
   const tab = view.tab || 'log';
   app.innerHTML = `
@@ -261,7 +400,8 @@ function renderHistory(ex){
   }));
   $('#delEx').onclick = () => confirmSheet(`Delete ${ex.name} and all its history?`, 'Delete', () => {
     db.exercises = db.exercises.filter(e => e.id!==ex.id);
-    db.sessions = db.sessions.filter(s => s.exId!==ex.id); save(); go({name:'home'});
+    db.sessions = db.sessions.filter(s => s.exId!==ex.id);
+    db.days.forEach(d => d.exIds = d.exIds.filter(id => id!==ex.id)); save(); back();
   });
 }
 
@@ -329,7 +469,7 @@ function openMenu(){
   $('#restoreBk').onclick = () => {
     try{ const d = JSON.parse($('#bk').value);
       if(!Array.isArray(d.exercises) || !Array.isArray(d.sessions)) throw 0;
-      confirmSheet('Replace all data with this backup?', 'Restore', () => { db = d; save(); go({name:'home'}); toast('Restored'); });
+      confirmSheet('Replace all data with this backup?', 'Restore', () => { db = d; if(!Array.isArray(db.days)) db.days=[]; save(); goHome(); toast('Restored'); });
     }catch(e){ toast('That backup text is not valid', true); }
   };
   $('#closeM').onclick = closeSheet;
